@@ -1,0 +1,2 @@
+# Release_CorporateSlavePatrolLamp
+Youtube公開用です
