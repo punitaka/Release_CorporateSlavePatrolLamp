@@ -1,0 +1,2 @@
+pythonのプログラムをESP32-S1で実行するarduinoバージョンです。
+Gmailではなく、ExchangeServerのメールに接続します。
