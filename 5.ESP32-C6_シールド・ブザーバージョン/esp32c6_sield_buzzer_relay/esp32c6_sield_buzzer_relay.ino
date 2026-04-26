@@ -4,17 +4,24 @@
 
   機能：
   - Wi-Fi接続
-  - Exchange Online REST APIをポーリング
+  - Exchange Online REST APIをポーリング（5分間隔）
   - 前回のチェック時刻以降に新たに受信したメールをチェック
-  - リレーをON（3分間継続）
-  - ブザーでメロディを再生（60秒継続）
-  - 自動的にOFF
+  - メール検出時にリレーをON（3分間継続）
+  - メール検出時にブザーでメロディを再生（30秒継続）
+  - 自動的にリレーOFF・ブザー停止
   - メールを既読にしない（複数台の機材で同じメールを処理可能）
+  - 起動直後にリレーとブザーを5秒間動作させて動作確認
+
+  メロディ仕様：
+  - BPMベースのノンブロッキング再生方式
+  - BPM: 158.000764（MIDI基準テンポ）
+  - 音符間無音比率: 8%
+  - 1フレーズ再生後に3秒待機して繰り返し
 
   対応ボード：Seeed Studio XIAO ESP32C6
   Grove Shield：Seeeduino XIAO用Grove シールド
-  リレー接続：A0ポート（GPIO 2）
-  ブザー接続：A1ポート（GPIO 3）
+  リレー接続：A0ポート（GPIO 0）
+  ブザー接続：A1ポート（GPIO 1）
 
   必要なライブラリ：
   - WiFi.h（ESP32標準）
@@ -27,73 +34,20 @@
 #include <ArduinoJson.h>
 #include <time.h>
 
-// 対応する音符と周波数を設定
-#define NOTE_D0  0
-#define NOTE_D1  294
-#define NOTE_D2  330
-#define NOTE_D3  350
-#define NOTE_D4  393
-#define NOTE_D5  441
-#define NOTE_D6  495
-#define NOTE_D7  556
-
-#define NOTE_DL6 248
-
-#define NOTE_DH1 589
-
-
-// 曲全体の音符部分
+// 曲全体の音符部分（ユーザー提供のMIDI基準メロディを周波数へ変換）
 int alert_melody[] = {
-  NOTE_DH1, NOTE_D6, NOTE_D5, NOTE_D6, NOTE_D0,
-  NOTE_DH1, NOTE_D6, NOTE_D5, NOTE_DH1, NOTE_D6, NOTE_D0, NOTE_D6,
-  NOTE_D6, NOTE_D6, NOTE_D5, NOTE_D6, NOTE_D0, NOTE_D6,
-  NOTE_DH1, NOTE_D6, NOTE_D5, NOTE_DH1, NOTE_D6, NOTE_D0,
-
-  NOTE_D1, NOTE_D1, NOTE_D3,
-  NOTE_D1, NOTE_D1, NOTE_D3, NOTE_D0,
-  NOTE_D6, NOTE_D6, NOTE_D6, NOTE_D5, NOTE_D6,
-  NOTE_D5, NOTE_D1, NOTE_D3, NOTE_D0,
-  NOTE_DH1, NOTE_D6, NOTE_D6, NOTE_D5, NOTE_D6,
-  NOTE_D5, NOTE_D1, NOTE_D2, NOTE_D0,
-  NOTE_D7, NOTE_D7, NOTE_D5, NOTE_D3,
-  NOTE_D5,
-  NOTE_DH1, NOTE_D0, NOTE_D6, NOTE_D6, NOTE_D5, NOTE_D5, NOTE_D6, NOTE_D6,
-  NOTE_D0, NOTE_D5, NOTE_D1, NOTE_D3, NOTE_D0,
-  NOTE_DH1, NOTE_D0, NOTE_D6, NOTE_D6, NOTE_D5, NOTE_D5, NOTE_D6, NOTE_D6,
-  NOTE_D0, NOTE_D5, NOTE_D1, NOTE_D2, NOTE_D0,
-  NOTE_D3, NOTE_D3, NOTE_D1, NOTE_DL6,
-  NOTE_D1,
-  NOTE_D3, NOTE_D5, NOTE_D6, NOTE_D6,
-  NOTE_D3, NOTE_D5, NOTE_D6, NOTE_D6,
-  NOTE_DH1, NOTE_D0, NOTE_D7, NOTE_D5,
-  NOTE_D6,
+  698, 740, 831, 831, 831, 831, 831, 554, 554, 554, 831, 740,
+  698, 740, 622, 1047, 1047, 932, 1047, 1109, 932, 1047, 1109, 1047,
+  932, 932, 1047, 1047, 1245, 1109, 698, 740, 740, 831, 932, 880,
+  880, 740, 698, 622, 698, 831, 1109, 932, 1109, 1047, 1047, 1109
 };
 
-// 各音符の持続時間
+// 各音符の持続時間（1.0 = 4分音符, 0.5 = 8分音符）
 float alert_duration[] = {
-  1, 1, 0.5, 0.5, 1,
-  0.5, 0.5, 0.5, 0.5, 1, 0.5, 0.5,
-  0.5, 1, 0.5, 1, 0.5, 0.5,
-  0.5, 0.5, 0.5, 0.5, 1, 1,
-
-  1, 1, 1 + 1,
-  0.5, 1, 1 + 0.5, 1,
-  1, 1, 0.5, 0.5, 1,
-  0.5, 1, 1 + 0.5, 1,
-  0.5, 0.5, 0.5, 0.5, 1 + 1,
-  0.5, 1, 1 + 0.5, 1,
-  1 + 1, 0.5, 0.5, 1,
-  1 + 1 + 1 + 1,
-  0.5, 0.5, 0.5 + 0.25, 0.25, 0.5 + 0.25, 0.25, 0.5 + 0.25, 0.25,
-  0.5, 1, 0.5, 1, 1,
-  0.5, 0.5, 0.5 + 0.25, 0.25, 0.5 + 0.25, 0.25, 0.5 + 0.25, 0.25,
-  0.5, 1, 0.5, 1, 1,
-  1 + 1, 0.5, 0.5, 1,
-  1 + 1 + 1 + 1,
-  0.5, 1, 0.5, 1 + 1,
-  0.5, 1, 0.5, 1 + 1,
-  1 + 1, 0.5, 0.5, 1,
-  1 + 1 + 1 + 1
+  0.5, 0.5, 1.0, 0.5, 1.0, 1.0, 1.0, 0.5, 1.5, 0.5, 0.5, 0.5,
+  1.0, 0.5, 1.0, 1.0, 1.0, 0.5, 0.5, 1.5, 0.5, 0.5, 1.0, 0.5,
+  1.0, 1.0, 1.0, 0.5, 1.0, 1.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0,
+  0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 0.5, 5.0
 };
 
 
@@ -118,7 +72,9 @@ const int BUZZER_DURATION = 30000;   // ブザー鳴動時間（ミリ秒）：3
 //const int RELAY_ON_DURATION = 30000; // リレーON継続時間（ミリ秒）：30秒 = 30000ms
 //const int BUZZER_DURATION = 15000;   // ブザー鳴動時間（ミリ秒）：15秒 = 15000ms
 
-const int MELODY_SPEED = 400;        // メロディ速度（ミリ秒）：Wikiコード例2準拠、小さいほど速い
+const float BPM = 158.000764f;               // ユーザー提供MIDI基準のテンポ
+const float NOTE_GAP_RATIO = 0.08f;           // 各音符の間に入れる無音比率
+const int REPEAT_WAIT_MS = 3000;              // 1フレーズ再生後の待機時間（ミリ秒）
 const char* ALERT_KEYWORD = ""; // 検出キーワード
 const int STARTUP_DELAY = 20000;    // 起動直後のスリープ時間（ミリ秒）：20秒 = 20000ms
 
@@ -134,7 +90,12 @@ String access_token = "";           // アクセストークン
 unsigned long token_expiry_time = 0; // トークン有効期限
 time_t last_email_check_timestamp = 0; // 前回のメール受信チェック時刻（Unix timestamp）
 int melody_index = 0;               // メロディ再生位置
-unsigned long last_note_time = 0;   // 最後に音符を再生した時刻
+bool note_in_gap = false;           // ブザー音符の無音区間フラグ
+bool melody_waiting_restart = false; // 1フレーズ再生後の待機フラグ
+unsigned long note_phase_start = 0; // 現在の音符または無音区間の開始時刻
+unsigned long repeat_wait_start = 0; // フレーズ再生後の待機開始時刻
+unsigned long current_sound_ms = 0; // 現在の音符の発音時間
+unsigned long current_gap_ms = 0;   // 現在の音符の無音時間
 
 int alert_melody_length = sizeof(alert_melody) / sizeof(alert_melody[0]);
 
@@ -142,7 +103,10 @@ int alert_melody_length = sizeof(alert_melody) / sizeof(alert_melody[0]);
 void setup_wifi();
 void setup_relay_buzzer();
 void set_relay(bool state);
-void play_melody_blocking();
+void start_buzzer();
+void stop_buzzer();
+int beatToMs(float beats);
+void start_next_note(unsigned long now);
 void manage_buzzer();
 void check_emails();
 void manage_relay_timer();
@@ -186,7 +150,13 @@ void setup() {
   // 起動直後にリレーを5秒稼働
   Serial.println("起動直後にリレーを5秒稼働");
   set_relay(true);
-  delay(5000);
+  start_buzzer();
+  unsigned long startup_buzzer_start = millis();
+  while (millis() - startup_buzzer_start < 5000) {
+    manage_buzzer();
+    delay(5);
+  }
+  stop_buzzer();
   set_relay(false);
   
   last_check_time = millis();
@@ -279,44 +249,102 @@ void set_relay(bool state) {
   }
 }
 
-// ===== ブザータイマー管理（ブロッキング方式・Wikiコード例2準拠） =====
-// Wikiコード例2と同じく tone() → delay() → noTone() をブロッキングで実行する。
-// BUZZER_DURATION を超えたら途中でも再生を打ち切る。
+// ===== ブザー制御 =====
+void start_buzzer() {
+  buzzer_active = true;
+  buzzer_on_time = millis();
+  melody_index = 0;
+  note_in_gap = false;
+  melody_waiting_restart = false;
+  note_phase_start = 0;
+  repeat_wait_start = 0;
+  current_sound_ms = 0;
+  current_gap_ms = 0;
+  Serial.println("ブザーを起動しました");
+}
+
+void stop_buzzer() {
+  noTone(BUZZER_PIN);
+  buzzer_active = false;
+  melody_index = 0;
+  note_in_gap = false;
+  melody_waiting_restart = false;
+  note_phase_start = 0;
+  repeat_wait_start = 0;
+  current_sound_ms = 0;
+  current_gap_ms = 0;
+  Serial.println("ブザー鳴動を停止しました");
+}
+
+int beatToMs(float beats) {
+  const float quarterMs = 60000.0f / BPM;
+  return (int)(quarterMs * beats + 0.5f);
+}
+
+void start_next_note(unsigned long now) {
+  int total_ms = beatToMs(alert_duration[melody_index]);
+  current_sound_ms = (unsigned long)(total_ms * (1.0f - NOTE_GAP_RATIO));
+  current_gap_ms = (unsigned long)(total_ms - current_sound_ms);
+  note_phase_start = now;
+  note_in_gap = false;
+  melody_waiting_restart = false;
+  repeat_wait_start = 0;
+
+  if (alert_melody[melody_index] > 0) {
+    tone(BUZZER_PIN, alert_melody[melody_index]);  // 停止はmanage_buzzer()内のnoTone()に任せる
+  } else {
+    noTone(BUZZER_PIN);
+  }
+}
+
+// ===== ブザータイマー管理（ノンブロッキング方式・BPMベース） =====
 void manage_buzzer() {
   if (!buzzer_active) {
     return;
   }
 
-  Serial.println("ブザーメロディ再生開始");
-
-  for (int x = melody_index; x < alert_melody_length; x++) {
-    // 鳴動時間を超えたら打ち切る
-    if (millis() - buzzer_on_time >= BUZZER_DURATION) {
-      noTone(BUZZER_PIN);
-      buzzer_active = false;
-      melody_index = 0;
-      Serial.println("ブザー鳴動時間終了（途中打ち切り）");
-      return;
-    }
-
-    tone(BUZZER_PIN, alert_melody[x]);           // 音符を出力
-    delay((int)(MELODY_SPEED * alert_duration[x])); // Wikiコード例2と同じ: delay(400 * duration[x])
-    noTone(BUZZER_PIN);                           // 音符を停止
-    melody_index = x + 1;
-  }
-
-  // 1周分の演奏が終わった場合、鳴動時間内であれば先頭に戻って継続
-  melody_index = 0;
-  if (millis() - buzzer_on_time < BUZZER_DURATION) {
-    // loop()に戻り、次のloop()呼び出しで再び先頭から再生される
+  unsigned long now = millis();
+  if (now - buzzer_on_time >= BUZZER_DURATION) {
+    Serial.println("ブザー鳴動時間終了");
+    stop_buzzer();
     return;
   }
 
-  // 鳴動時間終了
-  noTone(BUZZER_PIN);
-  buzzer_active = false;
-  melody_index = 0;
-  Serial.println("ブザー鳴動を停止しました");
+  if (melody_waiting_restart) {
+    if (now - repeat_wait_start >= REPEAT_WAIT_MS) {
+      melody_index = 0;
+      start_next_note(now);
+    }
+    return;
+  }
+
+  if (note_phase_start == 0) {
+    start_next_note(now);
+    return;
+  }
+
+  if (!note_in_gap) {
+    if (now - note_phase_start >= current_sound_ms) {
+      noTone(BUZZER_PIN);
+      note_in_gap = true;
+      note_phase_start = now;
+    }
+    return;
+  }
+
+  if (now - note_phase_start >= current_gap_ms) {
+    melody_index++;
+    if (melody_index >= alert_melody_length) {
+      noTone(BUZZER_PIN);
+      melody_index = 0;
+      note_phase_start = 0;
+      note_in_gap = false;
+      melody_waiting_restart = true;
+      repeat_wait_start = now;
+      return;
+    }
+    start_next_note(now);
+  }
 }
 
 // ===== リレータイマー管理 =====
@@ -430,10 +458,7 @@ void check_emails() {
         Serial.println(relay_on_time);
         
         // ブザーも起動
-        buzzer_active = true;
-        buzzer_on_time = millis();
-        melody_index = 0;
-        Serial.println("ブザーを起動しました");
+        start_buzzer();
       } else if (relay_active) {
         Serial.println("リレーは既にON状態です。タイマーはリセットしません");
       }
